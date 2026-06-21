@@ -176,7 +176,7 @@ def apply_strategy(df, mode):
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-    
+
     def get_t3(data, p=10, f=0.7):
         e1 = data.ewm(span=p, adjust=False).mean()
         e2 = e1.ewm(span=p, adjust=False).mean()
@@ -185,10 +185,10 @@ def apply_strategy(df, mode):
         e5 = e4.ewm(span=p, adjust=False).mean()
         e6 = e5.ewm(span=p, adjust=False).mean()
         return -f**3*e6 + (3*f**2 + 3*f**3)*e5 - (6*f**2 + 3*f + 3*f**3)*e4 + (1 + 3*f + f**3 + 3*f**2)*e3
-    
+
     df['T3'] = get_t3(df['Close'])
     df['Signal'] = "WAIT"
-    
+
     if mode == "T3 + RSI":
         df.loc[(df['Close'] > df['T3']) & (df['RSI'] > 55), 'Signal'] = "BUY"
         df.loc[(df['Close'] < df['T3']) & (df['RSI'] < 45), 'Signal'] = "SELL"
@@ -276,7 +276,7 @@ if menu_choice == "💡 Trade Ideas":
     st.markdown("""<div class="fade-in"><h2>💡 Top 10 Trade Ideas</h2><p style="color: #888;">AI-powered setups</p></div>""", unsafe_allow_html=True)
     ticker_text = "  🔥 NIFTY +1.2% | BANKNIFTY +0.8% | RELIANCE +2.1% | TCS +1.5% | INFY -0.4% | SBIN +1.8% | HDFCBANK +0.9% | ICICIBANK +1.1% 🔥  "
     st.markdown(f"""<div class="ticker-wrap"><div class="ticker-content">{ticker_text}</div></div>""", unsafe_allow_html=True)
-    
+
     rng = np.random.default_rng(seed=int(datetime.now().timestamp()) % 1000)
     ideas = []
     for i in range(10):
@@ -301,14 +301,14 @@ if menu_choice == "💡 Trade Ideas":
         reason = rng.choice(reasons.get(signal, reasons["RANGE"]))
         ideas.append({"id": i+1, "symbol": sym, "direction": direction, "entry": entry, "sl": sl, "target1": target1, "target2": target2, "score": score, "timeframe": rng.choice(["15M", "30M", "1H", "D"]), "reason": reason, "rsi": round(latest['RSI'], 1)})
     ideas = sorted(ideas, key=lambda x: x['score'], reverse=True)
-    
+
     buy_count = sum(1 for i in ideas if i['direction'] == "LONG")
     sell_count = sum(1 for i in ideas if i['direction'] == "SHORT")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Ideas", len(ideas)); m2.metric("BUY Setups", buy_count); m3.metric("SELL Setups", sell_count)
     m4.metric("Avg Conviction", f"{round(np.mean([i['score'] for i in ideas]), 1)}/100")
     st.divider()
-    
+
     cols = st.columns(2)
     for idx, idea in enumerate(ideas):
         col = cols[idx % 2]
@@ -370,7 +370,7 @@ elif menu_choice == "📊 Live Dashboard":
     sig_class = "signal-buy" if latest['Signal'] == "BUY" else "signal-sell" if latest['Signal'] == "SELL" else ""
     m3.markdown(f"""<div style="margin-top: 28px;"><span style="color: #888; font-size: 0.8em;">Signal</span><br><span class="{sig_class}">{latest['Signal']}</span></div>""", unsafe_allow_html=True)
     m4.metric("Open P&L", f"₹{total_pnl:.2f}", delta=f"{total_pnl:.2f}")
-    
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8], subplot_titles=("Price Action", "RSI"))
     x_vals = df.index
     fig.add_trace(go.Candlestick(x=x_vals, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
@@ -384,7 +384,7 @@ elif menu_choice == "📊 Live Dashboard":
     fig.add_hline(y=50, line_dash="dash", line_color="white", opacity=0.3, row=2, col=1)
     fig.update_layout(template="plotly_dark", height=650, margin=dict(l=0, r=0, t=40, b=0), xaxis_rangeslider_visible=False, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True)
-    
+
     st.subheader("⚡ Quick Execution")
     if cb_tripped:
         st.markdown("""<div class="circuit-breaker" style="text-align: center; padding: 20px;"><h3 style="color: #ff1744; margin: 0;">🛑 TRADING BLOCKED</h3></div>""", unsafe_allow_html=True)
@@ -416,30 +416,30 @@ elif menu_choice == "📊 Live Dashboard":
                 st.error("❌ Insufficient margin!")
 
 # ==========================================
-# 👀 PRO MARKET DEPTH PAGE
+# PRO MARKET DEPTH PAGE
 # ==========================================
 elif menu_choice == "👀 Market Depth":
     st.markdown("""<div class="fade-in"><h2>👀 Professional Market Depth</h2><p style="color: #888;">Live Level-2 Order Book with Script Analytics</p></div>""", unsafe_allow_html=True)
-    
-    # --- SEARCH BAR ---
+
+    # SEARCH BAR
     st.markdown("""<div class="fade-in">""", unsafe_allow_html=True)
     search_col, btn_col, kill_col = st.columns([3, 1, 1])
-    
+
     with search_col:
         search_input = st.text_input("🔍 Search Symbol", placeholder="e.g. RELIANCE, NIFTY 50, SBIN...", value=st.session_state.depth_symbol if st.session_state.depth_symbol else "")
-    
+
     with btn_col:
         search_clicked = st.button("🔎 SEARCH", use_container_width=True, type="primary")
-    
+
     with kill_col:
         kill_clicked = st.button("❌ KILL", use_container_width=True)
-    
+
     # Handle Kill
     if kill_clicked:
         st.session_state.depth_symbol = None
         st.session_state.depth_active = False
         st.rerun()
-    
+
     # Handle Search
     if search_clicked and search_input.strip():
         matched = [s for s in st.session_state.watchlist if search_input.upper() in s.upper()]
@@ -448,17 +448,17 @@ elif menu_choice == "👀 Market Depth":
             st.session_state.depth_active = True
         else:
             st.error(f"❌ Symbol '{search_input}' not found in watchlist!")
-    
+
     # If no active depth, show message
     if not st.session_state.depth_active or not st.session_state.depth_symbol:
         st.info("🔍 Enter a symbol and click SEARCH to view live market depth. Click KILL to reset.")
         st.stop()
-    
-    # --- GET DATA ---
+
+    # GET DATA
     sym = st.session_state.depth_symbol
     df = st.session_state.market_data[sym].copy()
     df = apply_strategy(df, st.session_state.selected_strategy)
-    
+
     latest = df.iloc[-1]
     prev_close = df.iloc[-2]['Close'] if len(df) > 1 else latest['Close']
     ltp = latest['Close']
@@ -469,17 +469,17 @@ elif menu_choice == "👀 Market Depth":
     day_low = df['Low'].min()
     volume = int(latest['Volume'])
     avg_price = round((df['Close'] * df['Volume']).sum() / df['Volume'].sum(), 2) if df['Volume'].sum() > 0 else ltp
-    
+
     change = round(ltp - prev_close, 2)
     change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
     change_color = "#00c853" if change >= 0 else "#ff1744"
     change_sign = "+" if change >= 0 else ""
-    
+
     # Circuit levels
     upper_circuit = round(prev_close * 1.20, 2) if "NIFTY" not in sym else round(prev_close * 1.10, 2)
     lower_circuit = round(prev_close * 0.80, 2) if "NIFTY" not in sym else round(prev_close * 0.90, 2)
-    
-    # --- SCRIPT HEADER CARD ---
+
+    # SCRIPT HEADER CARD
     st.markdown(f"""
         <div class="script-header fade-in">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
@@ -496,8 +496,8 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
-    # --- METRICS ROW ---
+
+    # METRICS ROW
     m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
     m1.metric("Open", f"₹{open_price:.2f}")
     m2.metric("High", f"₹{day_high:.2f}")
@@ -507,22 +507,22 @@ elif menu_choice == "👀 Market Depth":
     m6.metric("Avg Price", f"₹{avg_price:.2f}")
     m7.metric("Upper Circuit", f"₹{upper_circuit:.2f}")
     m8.metric("Lower Circuit", f"₹{lower_circuit:.2f}")
-    
+
     st.divider()
-    
-    # --- LIVE MARKET DEPTH ---
+
+    # LIVE MARKET DEPTH
     bids, asks = get_market_depth(ltp)
     total_bid_qty = int(bids['Bid Qty'].sum())
     total_ask_qty = int(asks['Ask Qty'].sum())
     bid_ask_ratio = round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else 0
-    
+
     st.subheader("📊 Live Level-2 Market Depth")
-    
+
     # Bid/Ask Ratio Bar
     total_qty = total_bid_qty + total_ask_qty
     bid_pct = (total_bid_qty / total_qty * 100) if total_qty > 0 else 50
     ask_pct = 100 - bid_pct
-    
+
     st.markdown(f"""
         <div style="margin-bottom: 15px;">
             <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 5px;">
@@ -542,16 +542,15 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     # Depth Tables Side by Side
     depth_col1, depth_col2 = st.columns(2)
-    
+
     with depth_col1:
         st.markdown("<h4 style='color: #00c853; text-align: center;'>🟢 BID (Buyers)</h4>", unsafe_allow_html=True)
         max_bid = bids['Bid Qty'].max()
-        
+
         for i, row in bids.iterrows():
-            width_pct = (row['Bid Qty'] / max_bid * 100) if max_bid > 0 else 0
             st.markdown(f"""
                 <div class="depth-row bid-bar" style="padding: 8px 12px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; justify-content: space-between; width: 100%;">
@@ -560,19 +559,18 @@ elif menu_choice == "👀 Market Depth":
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-        
+
         st.markdown(f"""
             <div style="text-align: center; padding: 10px; background: rgba(0,200,83,0.1); border-radius: 8px; margin-top: 10px;">
                 <span style="color: #00c853; font-weight: bold; font-size: 1.2em;">Total Buyers: {total_bid_qty:,}</span>
             </div>
         """, unsafe_allow_html=True)
-    
+
     with depth_col2:
         st.markdown("<h4 style='color: #ff1744; text-align: center;'>🔴 ASK (Sellers)</h4>", unsafe_allow_html=True)
         max_ask = asks['Ask Qty'].max()
-        
+
         for i, row in asks.iterrows():
-            width_pct = (row['Ask Qty'] / max_ask * 100) if max_ask > 0 else 0
             st.markdown(f"""
                 <div class="depth-row ask-bar" style="padding: 8px 12px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; justify-content: space-between; width: 100%;">
@@ -581,22 +579,21 @@ elif menu_choice == "👀 Market Depth":
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-        
+
         st.markdown(f"""
             <div style="text-align: center; padding: 10px; background: rgba(255,23,68,0.1); border-radius: 8px; margin-top: 10px;">
                 <span style="color: #ff1744; font-weight: bold; font-size: 1.2em;">Total Sellers: {total_ask_qty:,}</span>
             </div>
         """, unsafe_allow_html=True)
-    
+
     st.divider()
-    
-    # --- RECOMMENDATION PANEL ---
+
+    # RECOMMENDATION PANEL
     st.subheader("💡 Trade Recommendation: Kitne Tak Lena Sahi Hai?")
-    
-    # Calculate recommendation based on depth + technicals
+
     atr = round(df['Close'].diff().abs().rolling(14).mean().iloc[-1], 2)
     signal = latest['Signal']
-    
+
     if signal == "BUY" or bid_ask_ratio > 1.2:
         rec_signal = "BUY"
         rec_entry = round(ltp, 2)
@@ -621,7 +618,7 @@ elif menu_choice == "👀 Market Depth":
         rec_t2 = "-"
         rec_color = "#ff9100"
         rec_reason = "Market is balanced. Wait for clear breakout above resistance or below support."
-    
+
     st.markdown(f"""
         <div class="recommendation-box fade-in">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -634,7 +631,7 @@ elif menu_choice == "👀 Market Depth":
                     <div style="font-size: 1.5em; font-weight: bold; color: {rec_color};">{min(95, int(50 + abs(bid_ask_ratio-1)*30 + latest['RSI']/5))}%</div>
                 </div>
             </div>
-            
+
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
                 <div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">
                     <div style="color: #888; font-size: 0.75em; margin-bottom: 5px;">ENTRY</div>
@@ -653,12 +650,12 @@ elif menu_choice == "👀 Market Depth":
                     <div style="color: #00c853; font-size: 1.5em; font-weight: bold;">₹{rec_t2}</div>
                 </div>
             </div>
-            
+
             <div style="background: rgba(0,212,170,0.05); border-left: 3px solid #00d4aa; padding: 12px; border-radius: 0 8px 8px 0;">
                 <span style="color: #888; font-size: 0.8em;">ANALYSIS: </span>
                 <span style="color: #fff; font-size: 0.9em;">{rec_reason}</span>
             </div>
-            
+
             <div style="margin-top: 15px; display: flex; gap: 10px;">
                 <div style="flex: 1; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; text-align: center;">
                     <span style="color: #888; font-size: 0.7em;">RSI</span><br><span style="color: #fff; font-weight: bold;">{round(latest['RSI'], 1)}</span>
@@ -675,7 +672,7 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     # Execute from depth
     if rec_signal in ["BUY", "SELL"]:
         side = "BUY" if rec_signal == "BUY" else "SELL"
@@ -692,7 +689,7 @@ elif menu_choice == "👀 Market Depth":
                 st.balloons()
             else:
                 st.error("❌ Insufficient margin!")
-    
+
     st.markdown("""</div>""", unsafe_allow_html=True)
 
 # --- OPTIONS CHAIN ---
@@ -834,8 +831,7 @@ elif menu_choice == "📋 Order Book":
         for order in st.session_state.orders:
             if order['status'] == 'PENDING':
                 ltp = st.session_state.market_data[order['symbol']].iloc[-1]['Close']
-                if (order['type'] == 'LIMIT' and ((order['side'] == 'BUY' and ltp <= order['price']) or (order['side'] == 'SELL' and ltp >= order['price']))) or \
-                   (order['type'] == 'SL' and ((order['side'] == 'BUY' and ltp >= order['price']) or (order['side'] == 'SELL' and ltp <= order['price']))):
+                if (order['type'] == 'LIMIT' and ((order['side'] == 'BUY' and ltp <= order['price']) or (order['side'] == 'SELL' and ltp >= order['price']))) or                    (order['type'] == 'SL' and ((order['side'] == 'BUY' and ltp >= order['price']) or (order['side'] == 'SELL' and ltp <= order['price']))):
                     order['status'] = 'EXECUTED'
                     order['exec_price'] = ltp
                     st.session_state.portfolio.append({
@@ -1054,4 +1050,3 @@ elif menu_choice == "🔑 API Settings":
     with st.expander("3. Webhook Configuration"):
         st.text_input("Webhook URL", placeholder="https://your-server.com/webhook")
         st.toggle("Enable Real-time Webhooks", value=False)
-        
