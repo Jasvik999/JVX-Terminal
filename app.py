@@ -170,7 +170,7 @@ def login_screen():
                     st.rerun()
                 else:
                     st.error("❌ Invalid credentials! Access denied.")
-        st.caption("Demo Access: hitesh / jvx2026")
+        st.caption("Give Money for access 8141249466")
 
 if not st.session_state.authenticated:
     login_screen()
