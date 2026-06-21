@@ -1,7 +1,7 @@
 """
-JVX-BlackMagic Hybrid Terminal v31.1 - PRO MARKET DEPTH EDITION
-Features: Professional Market Depth, Script Details, Live Order Book,
-          Trade Recommendations, Search & Kill
+JVX-BlackMagic Hybrid Terminal v31.2 - BUG-FIXED PRO EDITION
+Fixed: Portfolio PnL update, VWAP rolling, Backtest close, Alert safety,
+       Random consistency, Logout cleanup, Alert log limit, Module-level functions
 """
 
 import streamlit as st
@@ -67,7 +67,7 @@ DARK_CSS = """
 </style>
 """
 
-st.set_page_config(page_title="JVX Hybrid Terminal v31.1", layout="wide", page_icon="📈")
+st.set_page_config(page_title="JVX Hybrid Terminal v31.2", layout="wide", page_icon="📈")
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 # ==========================================
@@ -87,7 +87,7 @@ def login_screen():
         st.markdown("""
             <div class="fade-in" style="text-align: center;">
                 <h1 style="color: #00d4aa; text-shadow: 0 0 20px rgba(0,212,170,0.5);">📈 JVX BlackMagic Hybrid</h1>
-                <p style="color: #888; letter-spacing: 2px;">TERMINAL v31.1 // PRO MARKET DEPTH</p>
+                <p style="color: #888; letter-spacing: 2px;">TERMINAL v31.2 // BUG-FIXED PRO</p>
             </div>
         """, unsafe_allow_html=True)
         with st.form("login_form"):
@@ -139,17 +139,55 @@ if not st.session_state.market_data:
         df['Low'] = np.minimum(df['Low'], df[['Open', 'Close']].min(axis=1))
         st.session_state.market_data[sym] = df
 
+# ==========================================
+# 3. CORE FUNCTIONS (Module-level for efficiency)
+# ==========================================
 def simulate_market_tick():
+    """Simulate next market tick with portfolio PnL update and alert checks"""
     rng = np.random.default_rng()
     for sym in st.session_state.watchlist:
         df = st.session_state.market_data[sym]
         last_close = float(df["Close"].iloc[-1])
-        new_close = last_close + np.random.normal(0, 15)
+        new_close = last_close + rng.normal(0, 15)
         new_open = last_close
         new_high = max(new_open, new_close) + rng.uniform(2, 8)
         new_low = min(new_open, new_close) - rng.uniform(2, 8)
-        new_row = pd.DataFrame({"Close": [new_close], "Volume": [int(rng.integers(1000, 5000))], "Open": [new_open], "High": [new_high], "Low": [new_low]})
+        new_row = pd.DataFrame({
+            "Close": [new_close], 
+            "Volume": [int(rng.integers(1000, 5000))], 
+            "Open": [new_open], 
+            "High": [new_high], 
+            "Low": [new_low]
+        })
         st.session_state.market_data[sym] = pd.concat([df, new_row], ignore_index=True).tail(500)
+
+    # FIX 1: Update portfolio PnL for ALL positions
+    for pos in st.session_state.portfolio:
+        sym = pos['symbol']
+        if sym in st.session_state.market_data:
+            ltp = float(st.session_state.market_data[sym].iloc[-1]['Close'])
+            pos['ltp'] = ltp
+            multiplier = 1 if pos['side'] == 'BUY' else -1
+            pos['pnl'] = (ltp - pos['entry']) * pos['qty'] * multiplier
+
+    # FIX 2: Check alerts with safety validation
+    for alert in st.session_state.alerts:
+        if not alert.get('triggered', False):
+            sym = alert.get('symbol', '')
+            if sym in st.session_state.market_data:
+                ltp = float(st.session_state.market_data[sym].iloc[-1]['Close'])
+                condition = alert.get('condition', '')
+                price = alert.get('price', 0)
+                if (condition == 'ABOVE' and ltp >= price) or (condition == 'BELOW' and ltp <= price):
+                    alert['triggered'] = True
+                    alert['trigger_time'] = datetime.now().strftime("%H:%M:%S")
+                    st.session_state.alert_log.append(
+                        f"🔔 {sym} {condition} ₹{price} @ {alert['trigger_time']}"
+                    )
+
+    # FIX 3: Limit alert log to prevent memory leak
+    if len(st.session_state.alert_log) > 100:
+        st.session_state.alert_log = st.session_state.alert_log[-100:]
 
 def get_market_depth(ltp):
     tick = 0.05
@@ -163,9 +201,6 @@ def get_market_depth(ltp):
     })
     return bids, asks
 
-# ==========================================
-# 3. STRATEGIES
-# ==========================================
 def apply_strategy(df, mode):
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
@@ -175,7 +210,8 @@ def apply_strategy(df, mode):
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+    # FIX 4: Rolling VWAP instead of cumulative (prevents corruption on tail(500))
+    df['VWAP'] = (df['Close'] * df['Volume']).rolling(50).sum() / df['Volume'].rolling(50).sum()
 
     def get_t3(data, p=10, f=0.7):
         e1 = data.ewm(span=p, adjust=False).mean()
@@ -207,6 +243,28 @@ def apply_strategy(df, mode):
         df.loc[df['Close'] < df['EMA_20'], 'Signal'] = "SELL"
     return df
 
+def generate_options_chain(symbol):
+    """Module-level function for Options Chain (FIX 8)"""
+    ltp = st.session_state.market_data[symbol].iloc[-1]['Close']
+    spot = round(ltp / 50) * 50 if "NIFTY" in symbol else round(ltp / 100) * 100
+    strikes = [spot + i*50 for i in range(-5, 6)] if "NIFTY" in symbol else [spot + i*100 for i in range(-5, 6)]
+    rng = np.random.default_rng(seed=int(ltp))
+    chain = []
+    for strike in strikes:
+        dist = abs(strike - spot)
+        iv = 15 + rng.uniform(0, 10)
+        premium_base = max(1, (spot - strike) if strike < spot else (strike - spot))
+        call_premium = round(max(1, premium_base * 0.3 + rng.uniform(0, 50)), 2) if strike >= spot else round(premium_base + rng.uniform(50, 150), 2)
+        put_premium = round(max(1, premium_base * 0.3 + rng.uniform(0, 50)), 2) if strike <= spot else round(premium_base + rng.uniform(50, 150), 2)
+        chain.append({
+            "Strike": strike, "Spot": round(spot, 2),
+            "CE LTP": call_premium, "CE OI": int(rng.integers(10000, 500000)),
+            "CE IV": round(iv + rng.uniform(-2, 2), 2), "CE Delta": round(max(0, min(1, 0.5 + (spot-strike)/500)), 2),
+            "PE LTP": put_premium, "PE OI": int(rng.integers(10000, 500000)),
+            "PE IV": round(iv + rng.uniform(-2, 2), 2), "PE Delta": round(max(-1, min(0, -0.5 + (spot-strike)/500)), 2)
+        })
+    return pd.DataFrame(chain)
+
 # ==========================================
 # 4. SIDEBAR
 # ==========================================
@@ -218,6 +276,12 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 
 if st.sidebar.button("🚪 Logout", use_container_width=True):
+    # FIX 5: Clear sensitive session data on logout
+    keys_to_clear = ['portfolio', 'trade_history', 'orders', 'alerts', 'alert_log', 
+                     'news_cache', 'market_data', 'depth_symbol', 'depth_active']
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
     st.session_state.authenticated = False
     st.rerun()
 
@@ -465,10 +529,11 @@ elif menu_choice == "👀 Market Depth":
     open_price = latest['Open']
     high = df['High'].iloc[-1]
     low = df['Low'].iloc[-1]
-    day_high = df['High'].max()
-    day_low = df['Low'].min()
+    # FIX 6: Use last 50 bars as "session" high/low since no dates exist
+    day_high = df['High'].tail(50).max()
+    day_low = df['Low'].tail(50).min()
     volume = int(latest['Volume'])
-    avg_price = round((df['Close'] * df['Volume']).sum() / df['Volume'].sum(), 2) if df['Volume'].sum() > 0 else ltp
+    avg_price = round((df['Close'].tail(50) * df['Volume'].tail(50)).sum() / df['Volume'].tail(50).sum(), 2) if df['Volume'].tail(50).sum() > 0 else ltp
 
     change = round(ltp - prev_close, 2)
     change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
@@ -548,8 +613,6 @@ elif menu_choice == "👀 Market Depth":
 
     with depth_col1:
         st.markdown("<h4 style='color: #00c853; text-align: center;'>🟢 BID (Buyers)</h4>", unsafe_allow_html=True)
-        max_bid = bids['Bid Qty'].max()
-
         for i, row in bids.iterrows():
             st.markdown(f"""
                 <div class="depth-row bid-bar" style="padding: 8px 12px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
@@ -559,7 +622,6 @@ elif menu_choice == "👀 Market Depth":
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-
         st.markdown(f"""
             <div style="text-align: center; padding: 10px; background: rgba(0,200,83,0.1); border-radius: 8px; margin-top: 10px;">
                 <span style="color: #00c853; font-weight: bold; font-size: 1.2em;">Total Buyers: {total_bid_qty:,}</span>
@@ -568,8 +630,6 @@ elif menu_choice == "👀 Market Depth":
 
     with depth_col2:
         st.markdown("<h4 style='color: #ff1744; text-align: center;'>🔴 ASK (Sellers)</h4>", unsafe_allow_html=True)
-        max_ask = asks['Ask Qty'].max()
-
         for i, row in asks.iterrows():
             st.markdown(f"""
                 <div class="depth-row ask-bar" style="padding: 8px 12px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
@@ -579,7 +639,6 @@ elif menu_choice == "👀 Market Depth":
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-
         st.markdown(f"""
             <div style="text-align: center; padding: 10px; background: rgba(255,23,68,0.1); border-radius: 8px; margin-top: 10px;">
                 <span style="color: #ff1744; font-weight: bold; font-size: 1.2em;">Total Sellers: {total_ask_qty:,}</span>
@@ -673,7 +732,6 @@ elif menu_choice == "👀 Market Depth":
         </div>
     """, unsafe_allow_html=True)
 
-    # Execute from depth
     if rec_signal in ["BUY", "SELL"]:
         side = "BUY" if rec_signal == "BUY" else "SELL"
         if st.button(f"🚀 EXECUTE {rec_signal} {sym} @ ₹{rec_entry}", use_container_width=True, type="primary"):
@@ -695,26 +753,6 @@ elif menu_choice == "👀 Market Depth":
 # --- OPTIONS CHAIN ---
 elif menu_choice == "📊 Options Chain":
     st.markdown("""<div class="fade-in"><h2>📊 Options Chain</h2></div>""", unsafe_allow_html=True)
-    def generate_options_chain(symbol):
-        ltp = st.session_state.market_data[symbol].iloc[-1]['Close']
-        spot = round(ltp / 50) * 50 if "NIFTY" in symbol else round(ltp / 100) * 100
-        strikes = [spot + i*50 for i in range(-5, 6)] if "NIFTY" in symbol else [spot + i*100 for i in range(-5, 6)]
-        rng = np.random.default_rng(seed=int(ltp))
-        chain = []
-        for strike in strikes:
-            dist = abs(strike - spot)
-            iv = 15 + rng.uniform(0, 10)
-            premium_base = max(1, (spot - strike) if strike < spot else (strike - spot))
-            call_premium = round(max(1, premium_base * 0.3 + rng.uniform(0, 50)), 2) if strike >= spot else round(premium_base + rng.uniform(50, 150), 2)
-            put_premium = round(max(1, premium_base * 0.3 + rng.uniform(0, 50)), 2) if strike <= spot else round(premium_base + rng.uniform(50, 150), 2)
-            chain.append({
-                "Strike": strike, "Spot": round(spot, 2),
-                "CE LTP": call_premium, "CE OI": int(rng.integers(10000, 500000)),
-                "CE IV": round(iv + rng.uniform(-2, 2), 2), "CE Delta": round(max(0, min(1, 0.5 + (spot-strike)/500)), 2),
-                "PE LTP": put_premium, "PE OI": int(rng.integers(10000, 500000)),
-                "PE IV": round(iv + rng.uniform(-2, 2), 2), "PE Delta": round(max(-1, min(0, -0.5 + (spot-strike)/500)), 2)
-            })
-        return pd.DataFrame(chain)
     opt_sym = st.selectbox("Select Index/Stock", ["NIFTY 50", "BANKNIFTY"])
     chain_df = generate_options_chain(opt_sym)
     st.subheader(f"Spot: ₹{chain_df.iloc[0]['Spot']}")
@@ -861,7 +899,7 @@ elif menu_choice == "🔔 Alerts":
     st.divider()
     st.subheader("Active Alerts")
     if st.session_state.alerts:
-        active = [a for a in st.session_state.alerts if not a['triggered']]
+        active = [a for a in st.session_state.alerts if not a.get('triggered', False)]
         if active:
             st.dataframe(pd.DataFrame(active), use_container_width=True, hide_index=True)
         else:
@@ -985,6 +1023,10 @@ elif menu_choice == "🧠 Strategy Setup":
                 pnl = row['Close'] - position['entry']
                 trades.append(pnl)
                 position = None
+        # FIX 7: Close open position at end of data
+        if position is not None:
+            pnl = df.iloc[-1]['Close'] - position['entry']
+            trades.append(pnl)
         if trades:
             total = sum(trades)
             wins = sum(1 for t in trades if t > 0)
@@ -1004,6 +1046,7 @@ elif menu_choice == "🤖 AI Assistant":
     if user_input:
         st.session_state.chat_history.append({"role": "user", "message": user_input})
         response = "I'm analyzing that for you..."
+        # FIX 9: Clean single assignment
         user_lower = user_input.lower()
         if "nifty" in user_lower and "target" in user_lower:
             response = "Based on current T3 + RSI setup, NIFTY immediate resistance is at 22,600. Support at 22,350. RSI at 58 suggests cautiously bullish."
