@@ -1,5 +1,5 @@
 """
-JVX-BlackMagic Hybrid Terminal v30.0 - THE TRUE HYBRID EDITION
+JVX-Magic Hybrid Terminal v30.0 - THE TRUE HYBRID EDITION
 Features: Login Gate, Level 2 Market Depth, Advanced Charts, 5 Pro Strategies, Telegram & Paytm API
 """
 
@@ -37,8 +37,7 @@ def login_screen():
                     st.rerun()
                 else:
                     st.error("❌ Invalid credentials!")
-        st.caption("Demo: hitesh / jvx2026")
-
+        
 if not st.session_state.authenticated:
     login_screen()
     st.stop()
