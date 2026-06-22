@@ -558,3 +558,73 @@ elif menu_choice == "🔑 API Settings":
         if st.button("📲 Send Test Alert", use_container_width=True):
             st.success("✅ Test alert sent to Telegram!")
             
+# ==========================================
+# 4. MARKET DATA ENGINE & STRATEGIES (Real yfinance Data)
+# ==========================================
+YF_TICKERS = {
+    "NIFTY 50": "^NSEI", "BANKNIFTY": "^NSEBANK", "RELIANCE": "RELIANCE.NS", 
+    "HDFCBANK": "HDFCBANK.NS", "INFY": "INFY.NS", "TCS": "TCS.NS", 
+    "SBIN": "SBIN.NS", "ICICIBANK": "ICICIBANK.NS"
+}
+
+if 'market_data_loaded' not in st.session_state:
+    st.session_state.market_data = {}
+    for sym in st.session_state.watchlist:
+        yf_sym = YF_TICKERS.get(sym, sym)
+        try:
+            # 5-min timeframe का असली लाइव डेटा (पिछले 5 दिनों का)
+            df = yf.Ticker(yf_sym).history(period="5d", interval="5m")
+            if not df.empty:
+                st.session_state.market_data[sym] = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        except Exception as e:
+            pass
+    st.session_state.market_data_loaded = True
+
+def simulate_market_tick():
+    # अब यह बटन डमी टिक नहीं बनाएगा, बल्कि NSE से असली 'लाइव कैंडल' फेच करेगा!
+    for sym in st.session_state.watchlist:
+        yf_sym = YF_TICKERS.get(sym, sym)
+        try:
+            df = yf.Ticker(yf_sym).history(period="5d", interval="5m")
+            if not df.empty:
+                st.session_state.market_data[sym] = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        except:
+            pass
+            # --- MARKET NEWS ---
+elif menu_choice == "📰 Market News":
+    st.markdown("""<div class="fade-in"><h2>📰 Live Market News Feed (yfinance)</h2></div>""", unsafe_allow_html=True)
+    
+    sym = st.selectbox("Select Symbol for News", st.session_state.watchlist)
+    yf_sym = YF_TICKERS.get(sym, sym)
+    
+    st.info(f"Fetching latest real-time news for {sym}...")
+    
+    try:
+        ticker = yf.Ticker(yf_sym)
+        news_data = ticker.news
+        
+        if news_data:
+            for item in news_data[:10]: # Top 10 ताज़ा ख़बरें
+                title = item.get('title', 'No Title')
+                publisher = item.get('publisher', 'Unknown Publisher')
+                link = item.get('link', '#')
+                pub_time = item.get('providerPublishTime', 0)
+                dt = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d %H:%M:%S")
+                
+                st.markdown(f"""
+                    <div class="news-card fade-in">
+                        <div style="display: flex; justify-content: space-between;">
+                            <div><span style="color: #00d4aa; font-weight: bold; font-size: 0.85em;">{publisher}</span>
+                            <span style="color: #666; font-size: 0.75em; margin-left: 10px;">{dt}</span>
+                            <p style="color: #fff; margin: 5px 0 0 0; font-size: 0.95em;">
+                                <a href="{link}" target="_blank" style="color: white; text-decoration: none;">{title}</a>
+                            </p></div>
+                            <div style="font-size: 1.2em;">📰</div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.warning(f"No recent news found for {sym}.")
+    except Exception as e:
+        st.error("Error fetching news. Please check your internet connection.")
+                
