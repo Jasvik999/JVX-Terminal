@@ -13,13 +13,16 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
+import os
 
 st.set_page_config(page_title="JVX Ultimate v34.0", layout="wide", page_icon="📈")
 
 # ==========================================
 # 0. DATABASE & TAX ENGINE INITIALIZATION
 # ==========================================
-conn = sqlite3.connect('jvx_trading.db', check_same_thread=False)
+# Use /tmp for cloud compatibility (SQLite persists per session)
+DB_PATH = os.path.join(os.getcwd(), 'jvx_trading.db')
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -146,12 +149,26 @@ DARK_CSS = """
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOGIN GATE
+# 2. LOGIN GATE (Using Streamlit Secrets)
 # ==========================================
-USERS = {
-    "admin": hashlib.sha256("changeme123".encode()).hexdigest(), 
-    "hitesh": hashlib.sha256("jvx2026".encode()).hexdigest()
-}
+# Cloud pe secrets.toml ya Secrets Manager se aayega
+# Format: [users] admin = "sha256_hash" hitesh = "sha256_hash"
+
+def get_users():
+    """Fetch users from secrets or fallback to demo"""
+    try:
+        users = {}
+        for username, pwd_hash in st.secrets["users"].items():
+            users[username] = pwd_hash
+        return users
+    except Exception:
+        # Fallback for local testing only
+        return {
+            "admin": hashlib.sha256("changeme123".encode()).hexdigest(),
+            "hitesh": hashlib.sha256("jvx2026".encode()).hexdigest()
+        }
+
+USERS = get_users()
 
 if "authenticated" not in st.session_state: 
     st.session_state.authenticated = False
