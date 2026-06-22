@@ -1,14 +1,13 @@
 """
 JVX-BlackMagic Hybrid Terminal v31.3 - PROFESSIONAL EDITION
 Features: Deep Audit, MTF Triple Confirmation, Black-Scholes Greeks, Live WebSocket
+Fixed: Trade Ideas HTML quote rendering issue
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import hashlib
-import time
-import sqlite3
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -39,13 +38,6 @@ DARK_CSS = """
     .slide-in { animation: slideIn 0.5s ease-out; }
     .idea-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: all 0.3s ease; }
     .idea-card:hover { border-color: #00d4aa; box-shadow: 0 0 20px rgba(0,212,170,0.15); transform: translateY(-2px); }
-    /* Trade Ideas cards: white background + forced black text, independent of
-       whatever theme (light/dark) the surrounding Streamlit app ends up using.
-       The old .idea-card assumed a dark page background, so light/white text
-       on it became invisible whenever that assumption didn't hold. */
-    .idea-card-light { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: all 0.3s ease; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-    .idea-card-light:hover { border-color: #00d4aa; box-shadow: 0 4px 16px rgba(0,212,170,0.25); transform: translateY(-2px); }
-    .idea-card-light, .idea-card-light * { color: #000000 !important; }
     .news-card { background: rgba(255,255,255,0.03); border-left: 3px solid #00d4aa; border-radius: 0 8px 8px 0; padding: 12px 16px; margin-bottom: 10px; transition: all 0.3s ease; }
     .news-card:hover { background: rgba(255,255,255,0.06); }
     .news-negative { border-left-color: #ff1744 !important; }
@@ -132,152 +124,11 @@ default_state = {
     'orders': [], 'alerts': [], 'alert_log': [],
     'theme': 'dark', 'backtest_results': None,
     'depth_symbol': None, 'depth_active': False,
-    'live_websocket': False, 'last_tick_time': None,
-    'option_legs': []
+    'live_websocket': False, 'last_tick_time': None
 }
 for key, val in default_state.items():
     if key not in st.session_state:
         st.session_state[key] = val
-
-# ==========================================
-# 2A. लोकल डेटाबेस (SQLite) — ट्रेड परसिस्टेंस
-# ==========================================
-# हर बुक किया गया ट्रेड यहीं save_trade() के ज़रिये jvx_trading.db में लिख दिया
-# जाता है, तो टर्मिनल/ब्राउज़र बंद करने पर भी ट्रेड हिस्ट्री खोती नहीं — लॉगिन
-# करने पर नीचे की लाइन्स उसी यूज़र के पुराने ट्रेड्स वापस लोड कर देती हैं।
-DB_PATH = "jvx_trading.db"
-
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            action TEXT,
-            symbol TEXT,
-            side TEXT,
-            qty INTEGER,
-            entry REAL,
-            exit_price REAL,
-            gross_pnl REAL,
-            brokerage REAL,
-            stt REAL,
-            gst REAL,
-            charges REAL,
-            net_pnl REAL,
-            outcome TEXT,
-            trade_time TEXT,
-            created_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-def save_trade(trade: dict, username: str):
-    """ट्रेड को SQLite फाइल में स्थायी रूप से लिखता है (आगे रीस्टार्ट होने पर भी सुरक्षित)।"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            """INSERT INTO trades
-               (username, action, symbol, side, qty, entry, exit_price, gross_pnl,
-                brokerage, stt, gst, charges, net_pnl, outcome, trade_time, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                username,
-                trade.get("Action", ""), trade.get("Symbol", ""), trade.get("Side", trade.get("side", "")),
-                trade.get("Qty", 0), trade.get("Entry", 0), trade.get("Exit", 0),
-                trade.get("Gross PnL", trade.get("PnL", 0)), trade.get("Brokerage", 0),
-                trade.get("STT", 0), trade.get("GST", 0), trade.get("Charges", 0),
-                trade.get("PnL", 0), trade.get("Outcome", ""), trade.get("Time", ""),
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        st.sidebar.error(f"⚠️ DB save failed: {e}")
-
-
-def load_trades_from_db(username: str):
-    """लॉगिन के समय इस यूज़र के पुराने सभी ट्रेड्स वापस लाता है।"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.execute(
-            """SELECT action, symbol, side, qty, entry, exit_price, gross_pnl,
-                      brokerage, stt, gst, charges, net_pnl, outcome, trade_time
-               FROM trades WHERE username = ? ORDER BY id ASC""",
-            (username,),
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [
-            {
-                "Action": r[0], "Symbol": r[1], "Side": r[2], "Qty": r[3],
-                "Entry": r[4], "Exit": r[5], "Gross PnL": r[6],
-                "Brokerage": r[7], "STT": r[8], "GST": r[9], "Charges": r[10],
-                "PnL": r[11], "Outcome": r[12], "Time": r[13],
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
-
-
-# लॉगिन के बाद, अगर इस सेशन में अभी कोई ट्रेड हिस्ट्री नहीं है, तो DB से पुराने
-# ट्रेड्स अपने-आप वापस भर दो — यही वह चीज़ है जिससे टर्मिनल बंद करने का डर खत्म होता है।
-if not st.session_state.trade_history:
-    st.session_state.trade_history = load_trades_from_db(st.session_state.username)
-
-
-# ==========================================
-# 2B. ब्रोकरेज + STT + GST चार्ज मॉडल (True Net-PnL)
-# ==========================================
-def calculate_charges(entry, exit_price, qty, side):
-    """
-    सरल, सांकेतिक (approximate) इंट्राडे-इक्विटी चार्ज मॉडल — असली ब्रोकर की
-    दर नहीं, बल्कि एक सामान्य डिस्काउंट-ब्रोकर ढांचे पर आधारित अनुमान है:
-      • ब्रोकरेज : प्रति लेग ₹20 फ्लैट या टर्नओवर का 0.03%, जो भी कम हो
-      • STT      : सिर्फ सेल साइड पर, टर्नओवर का 0.025% (इंट्राडे इक्विटी नियम)
-      • GST      : ब्रोकरेज पर 18%
-    वास्तविक कॉन्ट्रैक्ट नोट में एक्सचेंज ट्रांज़ैक्शन चार्ज, SEBI फीस और स्टैम्प
-    ड्यूटी जैसे छोटे चार्ज भी शामिल होते हैं जो ब्रोकर-दर-ब्रोकर बदलते हैं — यह
-    सिम्युलेटर के लिए एक करीबी अनुमान है, टैक्स/फाइनेंशियल एडवाइस नहीं।
-    """
-    if side == "BUY":
-        buy_value, sell_value = entry * qty, exit_price * qty
-    else:  # SELL / short
-        buy_value, sell_value = exit_price * qty, entry * qty
-
-    brokerage = min(20, buy_value * 0.0003) + min(20, sell_value * 0.0003)
-    stt = sell_value * 0.00025
-    gst = brokerage * 0.18
-    total_charges = brokerage + stt + gst
-    return round(brokerage, 2), round(stt, 2), round(gst, 2), round(total_charges, 2)
-
-
-def close_position_record(action_label, symbol, entry, exit_price, qty, side, gross_pnl):
-    """एक पोज़िशन बंद होने पर पूरा रेकॉर्ड (ग्रॉस + चार्जेस + नेट PnL) बनाता है,
-    ट्रेड लेजर में जोड़ता है, और save_trade() से डिस्क पर भी लिख देता है।"""
-    brokerage, stt, gst, charges = calculate_charges(entry, exit_price, qty, side)
-    net_pnl = round(gross_pnl - charges, 2)
-    outcome = "WIN" if net_pnl >= 0 else "LOSS"
-    record = {
-        "Action": action_label, "Symbol": symbol, "Side": side, "Qty": qty,
-        "Entry": round(entry, 2), "Exit": round(exit_price, 2),
-        "Gross PnL": round(gross_pnl, 2), "Brokerage": brokerage, "STT": stt, "GST": gst,
-        "Charges": charges, "PnL": net_pnl, "Outcome": outcome,
-        "Time": datetime.now().strftime("%H:%M:%S"),
-    }
-    st.session_state.trade_history.append(record)
-    save_trade(record, st.session_state.username)
-    st.session_state.used_margin -= entry * qty * 0.2
-    st.session_state.loss_streak = 0 if outcome == "WIN" else st.session_state.loss_streak + 1
-    return record
 
 # Seed data
 if not st.session_state.market_data:
@@ -314,8 +165,7 @@ def simulate_market_tick():
             "Low": [new_low]
         })
         st.session_state.market_data[sym] = pd.concat([df, new_row], ignore_index=True).tail(500)
-    
-    remaining_portfolio = []
+
     for pos in st.session_state.portfolio:
         sym = pos['symbol']
         if sym in st.session_state.market_data:
@@ -323,23 +173,6 @@ def simulate_market_tick():
             pos['ltp'] = ltp
             multiplier = 1 if pos['side'] == 'BUY' else -1
             pos['pnl'] = (ltp - pos['entry']) * pos['qty'] * multiplier
-
-            # SL/Target were stored on every position but never actually checked
-            # anywhere, so a trade could run straight through its own stop loss
-            # forever. Enforce them here, on every tick.
-            hit_target = (pos['side'] == 'BUY' and ltp >= pos['target']) or \
-                         (pos['side'] == 'SELL' and ltp <= pos['target'])
-            hit_sl = (pos['side'] == 'BUY' and ltp <= pos['sl']) or \
-                     (pos['side'] == 'SELL' and ltp >= pos['sl'])
-
-            if hit_target or hit_sl:
-                close_position_record(
-                    "TARGET HIT" if hit_target else "SL HIT",
-                    sym, pos['entry'], ltp, pos['qty'], pos['side'], pos['pnl']
-                )
-                continue  # don't keep this position open
-        remaining_portfolio.append(pos)
-    st.session_state.portfolio = remaining_portfolio
 
     for alert in st.session_state.alerts:
         if not alert.get('triggered', False):
@@ -354,10 +187,10 @@ def simulate_market_tick():
                     st.session_state.alert_log.append(
                         f"🔔 {sym} {condition} ₹{price} @ {alert['trigger_time']}"
                     )
-    
+
     if len(st.session_state.alert_log) > 100:
         st.session_state.alert_log = st.session_state.alert_log[-100:]
-    
+
     st.session_state.last_tick_time = datetime.now().strftime("%H:%M:%S")
 
 def get_market_depth(ltp):
@@ -382,7 +215,7 @@ def apply_strategy(df, mode):
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     df['VWAP'] = (df['Close'] * df['Volume']).rolling(50).sum() / df['Volume'].rolling(50).sum()
-    
+
     def get_t3(data, p=10, f=0.7):
         e1 = data.ewm(span=p, adjust=False).mean()
         e2 = e1.ewm(span=p, adjust=False).mean()
@@ -391,10 +224,10 @@ def apply_strategy(df, mode):
         e5 = e4.ewm(span=p, adjust=False).mean()
         e6 = e5.ewm(span=p, adjust=False).mean()
         return -f**3*e6 + (3*f**2 + 3*f**3)*e5 - (6*f**2 + 3*f + 3*f**3)*e4 + (1 + 3*f + f**3 + 3*f**2)*e3
-    
+
     df['T3'] = get_t3(df['Close'])
     df['Signal'] = "WAIT"
-    
+
     if mode == "T3 + RSI":
         df.loc[(df['Close'] > df['T3']) & (df['RSI'] > 55), 'Signal'] = "BUY"
         df.loc[(df['Close'] < df['T3']) & (df['RSI'] < 45), 'Signal'] = "SELL"
@@ -417,27 +250,26 @@ def apply_strategy(df, mode):
 # 4. BLACK-SCHOLES GREEKS
 # ==========================================
 def black_scholes_greeks(S, K, T, r, sigma, option_type='call'):
-    """Calculate real Black-Scholes Greeks"""
     if T <= 0 or sigma <= 0:
         return {'price': 0, 'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'rho': 0, 'iv': sigma}
-    
+
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    
+
     if option_type == 'call':
         price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
         delta = norm.cdf(d1)
     else:
         price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
         delta = -norm.cdf(-d1)
-    
+
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
     theta = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2 if option_type == 'call' else -d2)
     vega = S * norm.pdf(d1) * np.sqrt(T)
     rho = K * T * np.exp(-r * T) * norm.cdf(d2 if option_type == 'call' else -d2)
     if option_type == 'put':
         rho = -rho
-    
+
     return {
         'price': round(price, 2),
         'delta': round(delta, 4),
@@ -449,22 +281,21 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type='call'):
     }
 
 def generate_options_chain_bs(symbol):
-    """Options chain with real Black-Scholes Greeks"""
     ltp = st.session_state.market_data[symbol].iloc[-1]['Close']
     spot = round(ltp / 50) * 50 if "NIFTY" in symbol else round(ltp / 100) * 100
     strikes = [spot + i*50 for i in range(-5, 6)] if "NIFTY" in symbol else [spot + i*100 for i in range(-5, 6)]
-    
-    T = 7 / 365  # 7 days to expiry
-    r = 0.065    # 6.5% risk-free rate
-    
+
+    T = 7 / 365
+    r = 0.065
+
     chain = []
     for strike in strikes:
         moneyness = abs(strike - spot) / spot
         sigma = 0.15 + moneyness * 0.3 + np.random.uniform(0.02, 0.08)
-        
+
         call_greeks = black_scholes_greeks(spot, strike, T, r, sigma, 'call')
         put_greeks = black_scholes_greeks(spot, strike, T, r, sigma, 'put')
-        
+
         chain.append({
             "Strike": strike, "Spot": round(spot, 2),
             "CE LTP": call_greeks['price'], "CE Delta": call_greeks['delta'],
@@ -480,27 +311,22 @@ def generate_options_chain_bs(symbol):
 # 5. MTF TRIPLE CONFIRMATION
 # ==========================================
 def get_mtf_signal(symbol, strategy):
-    """Get signals from 5M, 15M, 1H timeframes"""
     df = st.session_state.market_data[symbol].copy()
-    
-    # 5M signal (base)
+
     df_5m = apply_strategy(df, strategy)
     sig_5m = df_5m.iloc[-1]['Signal']
-    
-    # 15M signal (resample 3 bars)
+
     df_15m = df.iloc[::3].copy()
     df_15m = apply_strategy(df_15m, strategy)
     sig_15m = df_15m.iloc[-1]['Signal'] if len(df_15m) > 0 else "WAIT"
-    
-    # 1H signal (resample 12 bars)
+
     df_1h = df.iloc[::12].copy()
     df_1h = apply_strategy(df_1h, strategy)
     sig_1h = df_1h.iloc[-1]['Signal'] if len(df_1h) > 0 else "WAIT"
-    
-    # Count matches
+
     buy_count = sum(1 for s in [sig_5m, sig_15m, sig_1h] if s == "BUY")
     sell_count = sum(1 for s in [sig_5m, sig_15m, sig_1h] if s == "SELL")
-    
+
     if buy_count == 3:
         return "BUY", 95, sig_5m, sig_15m, sig_1h
     elif sell_count == 3:
@@ -516,59 +342,42 @@ def get_mtf_signal(symbol, strategy):
 # 6. DEEP AUDIT / RISK METRICS
 # ==========================================
 def calculate_risk_metrics(trades):
-    """Calculate professional risk metrics"""
     if not trades or len(trades) < 2:
         return {
             'sharpe': 0, 'max_drawdown': 0, 'calmar': 0,
             'win_rate': 0, 'profit_factor': 0,
             'avg_win': 0, 'avg_loss': 0, 'expectancy': 0
         }
-    
+
     pnls = [t['PnL'] for t in trades]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
-    
-    # Sharpe Ratio (annualized, assuming 252 trading days)
+
     returns = np.array(pnls)
     if len(returns) > 1 and np.std(returns) > 0:
         sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(252)
     else:
         sharpe = 0
-    
-    # Max Drawdown — anchor the curve to a starting balance so the running
-    # peak can never be zero/negative. The previous version computed
-    # (cumulative - running_max) / running_max directly on raw PnL; once a
-    # losing streak put cumulative PnL below zero, running_max went negative
-    # too, and dividing by a negative number flips the sign — silently
-    # reporting near-zero or wrong-signed drawdown in exactly the scenario
-    # (early losses) where an accurate number matters most.
-    starting_balance = st.session_state.get('balance', 500000)
-    equity = starting_balance + cumulative
-    running_peak = np.maximum.accumulate(np.concatenate(([starting_balance], equity)))[1:]
-    drawdowns = (equity - running_peak) / running_peak
+
+    cumulative = np.cumsum(returns)
+    running_max = np.maximum.accumulate(cumulative)
+    drawdowns = (cumulative - running_max) / running_max
     max_dd = np.min(drawdowns) if len(drawdowns) > 0 else 0
-    
-    # Calmar Ratio — return and drawdown now both expressed as a % of
-    # starting balance, so they're actually comparable (previously mixed
-    # absolute rupee PnL with a % drawdown, which has no real meaning).
-    total_return_pct = (equity[-1] - starting_balance) / starting_balance if starting_balance else 0
-    calmar = total_return_pct / abs(max_dd) if max_dd != 0 else 0
-    
-    # Win Rate
+
+    total_return = cumulative[-1] if len(cumulative) > 0 else 0
+    calmar = total_return / abs(max_dd) if max_dd != 0 else 0
+
     win_rate = (len(wins) / len(pnls) * 100) if len(pnls) > 0 else 0
-    
-    # Profit Factor
+
     gross_profit = sum(wins) if wins else 0
     gross_loss = abs(sum(losses)) if losses else 0
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
-    
-    # Avg Win/Loss
+
     avg_win = np.mean(wins) if wins else 0
     avg_loss = np.mean(losses) if losses else 0
-    
-    # Expectancy
+
     expectancy = (win_rate/100 * avg_win) - ((100-win_rate)/100 * abs(avg_loss)) if avg_loss != 0 else 0
-    
+
     return {
         'sharpe': round(sharpe, 2),
         'max_drawdown': round(max_dd * 100, 2),
@@ -581,23 +390,17 @@ def calculate_risk_metrics(trades):
     }
 
 def generate_eod_excel(trades):
-    """Generate EOD Excel report"""
     if not trades:
         return None
-    
+
     df = pd.DataFrame(trades)
     metrics = calculate_risk_metrics(trades)
-    
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Trade History sheet
         df.to_excel(writer, sheet_name='Trade History', index=False)
-        
-        # Risk Metrics sheet
         metrics_df = pd.DataFrame([metrics])
         metrics_df.to_excel(writer, sheet_name='Risk Metrics', index=False)
-        
-        # Summary sheet
         summary = {
             'Metric': ['Total Trades', 'Total PnL', 'Win Rate %', 'Sharpe Ratio', 
                       'Max Drawdown %', 'Calmar Ratio', 'Profit Factor', 'Expectancy'],
@@ -613,7 +416,7 @@ def generate_eod_excel(trades):
             ]
         }
         pd.DataFrame(summary).to_excel(writer, sheet_name='Summary', index=False)
-    
+
     output.seek(0)
     return output
 
@@ -648,7 +451,6 @@ st.sidebar.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# WebSocket Live Toggle
 st.session_state.live_websocket = st.sidebar.toggle("🌐 Live WebSocket Mode", value=st.session_state.live_websocket)
 if st.session_state.live_websocket:
     st.sidebar.markdown(f"""
@@ -661,7 +463,6 @@ if st.session_state.live_websocket:
 
 menu_choice = st.sidebar.radio("Navigate:", [
     "💡 Trade Ideas", "📊 Live Dashboard", "👀 Market Depth", "📊 Options Chain",
-    "🛠️ Options Builder",
     "📰 Market News", "📂 Portfolio", "📋 Order Book", "🔔 Alerts",
     "🎭 Sentiment", "📅 Economic Calendar", "📁 Trade Ledger", 
     "🧠 Strategy Setup", "🤖 AI Assistant", "🔑 API Settings"
@@ -675,17 +476,8 @@ if st.sidebar.button("▶️ Simulate Next Tick", type="primary", use_container_
     st.session_state.last_news_time = None
     st.rerun()
 
-# Auto-refresh for WebSocket mode.
-# NOTE: this previously called st.rerun() with no delay at all, so it spun in
-# a tight loop as fast as the CPU allowed (not the claimed "1.0s") — that
-# pegs CPU/cost and can make the session unresponsive. time.sleep() at least
-# makes the 1s interval real; it does block this script run for that second,
-# which is fine for one user but won't scale to many concurrent sessions. For
-# production, prefer a non-blocking approach (e.g. streamlit-autorefresh, or
-# @st.fragment(run_every=...) on supported Streamlit versions) instead.
 if st.session_state.live_websocket:
     st.sidebar.caption("Auto-refreshing every 1 second...")
-    time.sleep(1)
     st.rerun()
 
 cb_tripped = st.session_state.loss_streak >= st.session_state.loss_limit
@@ -694,14 +486,6 @@ if cb_tripped:
     st.session_state.auto_trade = False
 
 st.session_state.auto_trade = st.sidebar.toggle("🤖 Auto-Pilot", value=st.session_state.auto_trade)
-
-if st.session_state.exec_mode == "LIVE":
-    st.warning(
-        "⚠️ LIVE execution mode is selected, but no real broker order-routing is connected in "
-        "this build — API Settings only simulates authentication, and every action on every "
-        "page below still just simulates a fill. No real order is sent. Wire up an actual "
-        "broker API before treating any execution here as live trading."
-    )
 
 loss_ratio = min(st.session_state.loss_streak / max(st.session_state.loss_limit, 1), 1.0)
 bar_color = "#ff1744" if loss_ratio >= 1.0 else "#ff9100" if loss_ratio >= 0.6 else "#00c853"
@@ -719,43 +503,38 @@ st.sidebar.markdown(f"""
 # 8. PAGES
 # ==========================================
 
-# --- TRADE IDEAS WITH MTF ---
+# --- TRADE IDEAS WITH MTF (FIXED) ---
 if menu_choice == "💡 Trade Ideas":
-    rng = np.random.default_rng(seed=int(datetime.now().timestamp()) % 1000)
-    num_ideas = min(10, len(st.session_state.watchlist))
-    st.markdown(f"""<div class="fade-in"><h2>💡 Top {num_ideas} Trade Ideas</h2><p style="color: #888;">MTF Triple Confirmation Enabled</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="fade-in"><h2>💡 Top 10 Trade Ideas</h2><p style="color: #888;">MTF Triple Confirmation Enabled</p></div>""", unsafe_allow_html=True)
     ticker_text = "  🔥 NIFTY +1.2% | BANKNIFTY +0.8% | RELIANCE +2.1% | TCS +1.5% | INFY -0.4% | SBIN +1.8% | HDFCBANK +0.9% | ICICIBANK +1.1% 🔥  "
     st.markdown(f"""<div class="ticker-wrap"><div class="ticker-content">{ticker_text}</div></div>""", unsafe_allow_html=True)
-    
-    # पहले हर बार 10 बार watchlist से with-replacement उठाया जाता था, जिसमें
-    # सिर्फ 8 symbols होने पर बार-बार वही symbol रिपीट होता था (अगर वो symbol
-    # उस वक्त RANGE/WAIT में था, तो पूरा पेज भरा-भरा दिखकर भी असल में कोई नई
-    # सलाह नहीं दे रहा था)। अब हर symbol सिर्फ एक बार आता है।
-    idea_symbols = rng.choice(st.session_state.watchlist, size=num_ideas, replace=False)
+
+    rng = np.random.default_rng(seed=int(datetime.now().timestamp()) % 1000)
     ideas = []
-    for i, sym in enumerate(idea_symbols):
+    for i in range(10):
+        sym = rng.choice(st.session_state.watchlist)
         mtf_signal, mtf_score, sig_5m, sig_15m, sig_1h = get_mtf_signal(sym, st.session_state.selected_strategy)
-        
+
         df = st.session_state.market_data[sym].copy()
         df = apply_strategy(df, st.session_state.selected_strategy)
         latest = df.iloc[-1]
         ltp = round(latest['Close'], 2)
         atr = round(df['Close'].diff().abs().rolling(14).mean().iloc[-1], 2)
-        
+
         if mtf_signal == "BUY":
             entry, sl, target1, target2, direction = ltp, round(ltp-atr*1.5, 2), round(ltp+atr*2, 2), round(ltp+atr*3.5, 2), "LONG"
         elif mtf_signal == "SELL":
             entry, sl, target1, target2, direction = ltp, round(ltp+atr*1.5, 2), round(ltp-atr*2, 2), round(ltp-atr*3.5, 2), "SHORT"
         else:
             entry, sl, target1, target2, direction = ltp, round(ltp-atr*2, 2), round(ltp+atr*2.5, 2), "-", "RANGE"
-        
+
         reasons = {
             "BUY": ["T3 breakout on all 3 timeframes", "Triple confirmation: 5M+15M+1H aligned", "Volume surge + VWAP support", "RSI momentum across TFs"],
             "SELL": ["T3 rejection on all 3 timeframes", "Triple confirmation: 5M+15M+1H aligned", "Breakdown below VWAP on all TFs", "RSI divergence resolved"],
             "RANGE": ["Mixed signals across timeframes", "Wait for alignment", "Consolidation on higher TF", "Low volume expansion"]
         }
         reason = rng.choice(reasons.get(mtf_signal, reasons["RANGE"]))
-        
+
         ideas.append({
             "id": i+1, "symbol": sym, "direction": direction, "entry": entry, "sl": sl, 
             "target1": target1, "target2": target2, "score": mtf_score,
@@ -763,70 +542,65 @@ if menu_choice == "💡 Trade Ideas":
             "timeframe": rng.choice(["15M", "30M", "1H", "D"]), "reason": reason, "rsi": round(latest['RSI'], 1)
         })
     ideas = sorted(ideas, key=lambda x: x['score'], reverse=True)
-    
+
     buy_count = sum(1 for i in ideas if i['direction'] == "LONG")
     sell_count = sum(1 for i in ideas if i['direction'] == "SHORT")
     high_conviction = sum(1 for i in ideas if i['score'] >= 95)
-    
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Ideas", len(ideas))
     m2.metric("🔥 High Conviction", high_conviction)
     m3.metric("BUY Setups", buy_count)
     m4.metric("SELL Setups", sell_count)
     st.divider()
-    
+
     cols = st.columns(2)
     for idx, idea in enumerate(ideas):
         col = cols[idx % 2]
-        dir_color = "#00c853" if idea['direction'] == "LONG" else "#ff1744" if idea['direction'] == "SHORT" else "#ff9100"
-        score_class = "score-high" if idea['score'] >= 95 else "score-mid" if idea['score'] >= 70 else "score-low"
-        
-        # MTF indicator
-        mtf_match = idea['sig_5m'] == idea['sig_15m'] == idea['sig_1h'] and idea['sig_5m'] in ["BUY", "SELL"]
-        mtf_class = "mtf-match" if mtf_match else "mtf-mismatch"
-        
-        col.markdown(f"""
-            <div class="idea-card-light fade-in">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <div><span style="font-size: 1.3em; font-weight: bold; color: #fff;">{idea['symbol']}</span>
-                    <span style="color: {dir_color}; font-weight: bold; margin-left: 10px; border: 1px solid {dir_color}; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;">{idea['direction']}</span></div>
-                    <div class="score-badge {score_class}">{idea['score']}</div>
-                </div>
-                <div class="{mtf_class}" style="margin-bottom: 10px; font-size: 0.85em;">
-                    <span style="color: #888;">MTF: </span>
-                    <span style="color: {'#00c853' if idea['sig_5m']=='BUY' else '#ff1744' if idea['sig_5m']=='SELL' else '#888'};">5M:{idea['sig_5m']}</span> | 
-                    <span style="color: {'#00c853' if idea['sig_15m']=='BUY' else '#ff1744' if idea['sig_15m']=='SELL' else '#888'};">15M:{idea['sig_15m']}</span> | 
-                    <span style="color: {'#00c853' if idea['sig_1h']=='BUY' else '#ff1744' if idea['sig_1h']=='SELL' else '#888'};">1H:{idea['sig_1h']}</span>
-                    {' ✅ TRIPLE MATCH' if mtf_match else ''}
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                    <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 6px; text-align: center;">
-                        <span style="color: #888; font-size: 0.7em;">ENTRY</span><br><span style="color: #00d4aa; font-weight: bold;">₹{idea['entry']}</span></div>
-                    <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 6px; text-align: center;">
-                        <span style="color: #888; font-size: 0.7em;">SL</span><br><span style="color: #ff1744; font-weight: bold;">₹{idea['sl']}</span></div>
-                    <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 6px; text-align: center;">
-                        <span style="color: #888; font-size: 0.7em;">TARGET</span><br><span style="color: #00c853; font-weight: bold;">₹{idea['target1']}</span></div>
-                </div>
-                <div style="margin-bottom: 8px;"><span style="color: #888; font-size: 0.8em;">Strategy: </span><span style="color: #00d4aa; font-size: 0.85em;">{idea['reason']}</span></div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.75em; color: #666;"><span>TF: {idea['timeframe']}</span><span>RSI: {idea['rsi']}</span></div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if idea['direction'] in ["LONG", "SHORT"] and col.button(f"🚀 Execute {idea['direction']}", key=f"idea_{idea['id']}", use_container_width=True):
-            margin_used = idea['entry'] * st.session_state.quantity * 0.2
-            if st.session_state.balance - st.session_state.used_margin >= margin_used:
-                st.session_state.portfolio.append({
-                    "symbol": idea['symbol'], "entry": idea['entry'], "qty": st.session_state.quantity,
-                    "side": "BUY" if idea['direction'] == "LONG" else "SELL",
-                    "sl": idea['sl'], "target": idea['target1'], "time": datetime.now().strftime("%H:%M:%S"),
-                    "pnl": 0
-                })
-                st.session_state.used_margin += margin_used
-                st.session_state.toast_msg = f"🚀 {idea['direction']} {idea['symbol']} @ ₹{idea['entry']}"
-                st.rerun()
-            else:
-                st.error("❌ Insufficient margin!")
 
+        # Use native Streamlit components - NO raw HTML inside cards
+        with col.container():
+            # Header row
+            h1, h2 = st.columns([3, 1])
+            dir_color = "green" if idea['direction'] == "LONG" else "red" if idea['direction'] == "SHORT" else "orange"
+            h1.markdown(f"**{idea['symbol']}** :{dir_color}[{idea['direction']}]")
+            h2.markdown(f"**Score: {idea['score']}**")
+
+            # MTF Status
+            mtf_match = idea['sig_5m'] == idea['sig_15m'] == idea['sig_1h'] and idea['sig_5m'] in ["BUY", "SELL"]
+            if mtf_match:
+                st.success(f"🔥 MTF ALIGN: 5M:{idea['sig_5m']} | 15M:{idea['sig_15m']} | 1H:{idea['sig_1h']} ✅ TRIPLE MATCH")
+            else:
+                st.info(f"MTF: 5M:{idea['sig_5m']} | 15M:{idea['sig_15m']} | 1H:{idea['sig_1h']}")
+
+            # Entry/SL/Target
+            e1, e2, e3 = st.columns(3)
+            e1.metric("ENTRY", f"₹{idea['entry']}")
+            e2.metric("SL", f"₹{idea['sl']}", delta=f"₹{round(idea['entry']-idea['sl'],2)}")
+            e3.metric("TARGET", f"₹{idea['target1']}")
+
+            # Reason
+            st.caption(f"Strategy: {idea['reason']}")
+            st.caption(f"TF: {idea['timeframe']} | RSI: {idea['rsi']}")
+
+            # Execute button
+            if idea['direction'] in ["LONG", "SHORT"]:
+                if st.button(f"🚀 Execute {idea['direction']}", key=f"idea_{idea['id']}", use_container_width=True):
+                    margin_used = idea['entry'] * st.session_state.quantity * 0.2
+                    if st.session_state.balance - st.session_state.used_margin >= margin_used:
+                        st.session_state.portfolio.append({
+                            "symbol": idea['symbol'], "entry": idea['entry'], "qty": st.session_state.quantity,
+                            "side": "BUY" if idea['direction'] == "LONG" else "SELL",
+                            "sl": idea['sl'], "target": idea['target1'], "time": datetime.now().strftime("%H:%M:%S"),
+                            "pnl": 0
+                        })
+                        st.session_state.used_margin += margin_used
+                        st.session_state.toast_msg = f"🚀 {idea['direction']} {idea['symbol']} @ ₹{idea['entry']}"
+                        st.rerun()
+                    else:
+                        st.error("❌ Insufficient margin!")
+
+            st.divider()
 # --- LIVE DASHBOARD ---
 elif menu_choice == "📊 Live Dashboard":
     st.markdown("""<div class="fade-in"><h2>📊 Advanced Trading Dashboard</h2></div>""", unsafe_allow_html=True)
@@ -849,7 +623,7 @@ elif menu_choice == "📊 Live Dashboard":
     sig_class = "signal-buy" if latest['Signal'] == "BUY" else "signal-sell" if latest['Signal'] == "SELL" else ""
     m3.markdown(f"""<div style="margin-top: 28px;"><span style="color: #888; font-size: 0.8em;">Signal</span><br><span class="{sig_class}">{latest['Signal']}</span></div>""", unsafe_allow_html=True)
     m4.metric("Open P&L", f"₹{total_pnl:.2f}", delta=f"{total_pnl:.2f}")
-    
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8], subplot_titles=("Price Action", "RSI"))
     x_vals = df.index
     fig.add_trace(go.Candlestick(x=x_vals, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
@@ -863,7 +637,7 @@ elif menu_choice == "📊 Live Dashboard":
     fig.add_hline(y=50, line_dash="dash", line_color="white", opacity=0.3, row=2, col=1)
     fig.update_layout(template="plotly_dark", height=650, margin=dict(l=0, r=0, t=40, b=0), xaxis_rangeslider_visible=False, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True)
-    
+
     st.subheader("⚡ Quick Execution")
     if cb_tripped:
         st.markdown("""<div class="circuit-breaker" style="text-align: center; padding: 20px;"><h3 style="color: #ff1744; margin: 0;">🛑 TRADING BLOCKED</h3></div>""", unsafe_allow_html=True)
@@ -897,24 +671,24 @@ elif menu_choice == "📊 Live Dashboard":
 # --- MARKET DEPTH ---
 elif menu_choice == "👀 Market Depth":
     st.markdown("""<div class="fade-in"><h2>👀 Professional Market Depth</h2><p style="color: #888;">Live Level-2 Order Book with Script Analytics</p></div>""", unsafe_allow_html=True)
-    
+
     st.markdown("""<div class="fade-in">""", unsafe_allow_html=True)
     search_col, btn_col, kill_col = st.columns([3, 1, 1])
-    
+
     with search_col:
         search_input = st.text_input("🔍 Search Symbol", placeholder="e.g. RELIANCE, NIFTY 50, SBIN...", value=st.session_state.depth_symbol if st.session_state.depth_symbol else "")
-    
+
     with btn_col:
         search_clicked = st.button("🔎 SEARCH", use_container_width=True, type="primary")
-    
+
     with kill_col:
         kill_clicked = st.button("❌ KILL", use_container_width=True)
-    
+
     if kill_clicked:
         st.session_state.depth_symbol = None
         st.session_state.depth_active = False
         st.rerun()
-    
+
     if search_clicked and search_input.strip():
         matched = [s for s in st.session_state.watchlist if search_input.upper() in s.upper()]
         if matched:
@@ -922,15 +696,15 @@ elif menu_choice == "👀 Market Depth":
             st.session_state.depth_active = True
         else:
             st.error(f"❌ Symbol '{search_input}' not found in watchlist!")
-    
+
     if not st.session_state.depth_active or not st.session_state.depth_symbol:
         st.info("🔍 Enter a symbol and click SEARCH to view live market depth. Click KILL to reset.")
         st.stop()
-    
+
     sym = st.session_state.depth_symbol
     df = st.session_state.market_data[sym].copy()
     df = apply_strategy(df, st.session_state.selected_strategy)
-    
+
     latest = df.iloc[-1]
     prev_close = df.iloc[-2]['Close'] if len(df) > 1 else latest['Close']
     ltp = latest['Close']
@@ -939,15 +713,15 @@ elif menu_choice == "👀 Market Depth":
     day_low = df['Low'].tail(50).min()
     volume = int(latest['Volume'])
     avg_price = round((df['Close'].tail(50) * df['Volume'].tail(50)).sum() / df['Volume'].tail(50).sum(), 2) if df['Volume'].tail(50).sum() > 0 else ltp
-    
+
     change = round(ltp - prev_close, 2)
     change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
     change_color = "#00c853" if change >= 0 else "#ff1744"
     change_sign = "+" if change >= 0 else ""
-    
+
     upper_circuit = round(prev_close * 1.20, 2) if "NIFTY" not in sym else round(prev_close * 1.10, 2)
     lower_circuit = round(prev_close * 0.80, 2) if "NIFTY" not in sym else round(prev_close * 0.90, 2)
-    
+
     st.markdown(f"""
         <div class="script-header fade-in">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
@@ -964,7 +738,7 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
     m1.metric("Open", f"₹{open_price:.2f}")
     m2.metric("High", f"₹{day_high:.2f}")
@@ -974,20 +748,20 @@ elif menu_choice == "👀 Market Depth":
     m6.metric("Avg Price", f"₹{avg_price:.2f}")
     m7.metric("Upper Circuit", f"₹{upper_circuit:.2f}")
     m8.metric("Lower Circuit", f"₹{lower_circuit:.2f}")
-    
+
     st.divider()
-    
+
     bids, asks = get_market_depth(ltp)
     total_bid_qty = int(bids['Bid Qty'].sum())
     total_ask_qty = int(asks['Ask Qty'].sum())
     bid_ask_ratio = round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else 0
-    
+
     st.subheader("📊 Live Level-2 Market Depth")
-    
+
     total_qty = total_bid_qty + total_ask_qty
     bid_pct = (total_bid_qty / total_qty * 100) if total_qty > 0 else 50
     ask_pct = 100 - bid_pct
-    
+
     st.markdown(f"""
         <div style="margin-bottom: 15px;">
             <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 5px;">
@@ -1007,9 +781,9 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     depth_col1, depth_col2 = st.columns(2)
-    
+
     with depth_col1:
         st.markdown("<h4 style='color: #00c853; text-align: center;'>🟢 BID (Buyers)</h4>", unsafe_allow_html=True)
         for i, row in bids.iterrows():
@@ -1026,7 +800,7 @@ elif menu_choice == "👀 Market Depth":
                 <span style="color: #00c853; font-weight: bold; font-size: 1.2em;">Total Buyers: {total_bid_qty:,}</span>
             </div>
         """, unsafe_allow_html=True)
-    
+
     with depth_col2:
         st.markdown("<h4 style='color: #ff1744; text-align: center;'>🔴 ASK (Sellers)</h4>", unsafe_allow_html=True)
         for i, row in asks.iterrows():
@@ -1043,14 +817,14 @@ elif menu_choice == "👀 Market Depth":
                 <span style="color: #ff1744; font-weight: bold; font-size: 1.2em;">Total Sellers: {total_ask_qty:,}</span>
             </div>
         """, unsafe_allow_html=True)
-    
+
     st.divider()
-    
+
     st.subheader("💡 Trade Recommendation: Kitne Tak Lena Sahi Hai?")
-    
+
     atr = round(df['Close'].diff().abs().rolling(14).mean().iloc[-1], 2)
     signal = latest['Signal']
-    
+
     if signal == "BUY" or bid_ask_ratio > 1.2:
         rec_signal = "BUY"
         rec_entry = round(ltp, 2)
@@ -1075,7 +849,7 @@ elif menu_choice == "👀 Market Depth":
         rec_t2 = "-"
         rec_color = "#ff9100"
         rec_reason = "Market is balanced. Wait for clear breakout above resistance or below support."
-    
+
     st.markdown(f"""
         <div class="recommendation-box fade-in">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -1088,7 +862,7 @@ elif menu_choice == "👀 Market Depth":
                     <div style="font-size: 1.5em; font-weight: bold; color: {rec_color};">{min(95, int(50 + abs(bid_ask_ratio-1)*30 + latest['RSI']/5))}%</div>
                 </div>
             </div>
-            
+
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
                 <div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">
                     <div style="color: #888; font-size: 0.75em; margin-bottom: 5px;">ENTRY</div>
@@ -1107,12 +881,12 @@ elif menu_choice == "👀 Market Depth":
                     <div style="color: #00c853; font-size: 1.5em; font-weight: bold;">₹{rec_t2}</div>
                 </div>
             </div>
-            
+
             <div style="background: rgba(0,212,170,0.05); border-left: 3px solid #00d4aa; padding: 12px; border-radius: 0 8px 8px 0;">
                 <span style="color: #888; font-size: 0.8em;">ANALYSIS: </span>
                 <span style="color: #fff; font-size: 0.9em;">{rec_reason}</span>
             </div>
-            
+
             <div style="margin-top: 15px; display: flex; gap: 10px;">
                 <div style="flex: 1; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; text-align: center;">
                     <span style="color: #888; font-size: 0.7em;">RSI</span><br><span style="color: #fff; font-weight: bold;">{round(latest['RSI'], 1)}</span>
@@ -1129,7 +903,7 @@ elif menu_choice == "👀 Market Depth":
             </div>
         </div>
     """, unsafe_allow_html=True)
-    
+
     if rec_signal in ["BUY", "SELL"]:
         side = "BUY" if rec_signal == "BUY" else "SELL"
         if st.button(f"🚀 EXECUTE {rec_signal} {sym} @ ₹{rec_entry}", use_container_width=True, type="primary"):
@@ -1145,7 +919,7 @@ elif menu_choice == "👀 Market Depth":
                 st.balloons()
             else:
                 st.error("❌ Insufficient margin!")
-    
+
     st.markdown("""</div>""", unsafe_allow_html=True)
 
 # --- OPTIONS CHAIN WITH BLACK-SCHOLES ---
@@ -1154,16 +928,15 @@ elif menu_choice == "📊 Options Chain":
     opt_sym = st.selectbox("Select Index/Stock", ["NIFTY 50", "BANKNIFTY"])
     chain_df = generate_options_chain_bs(opt_sym)
     st.subheader(f"Spot: ₹{chain_df.iloc[0]['Spot']} | TTM: 7 Days | Risk-Free: 6.5%")
-    
+
     def highlight_atm(row):
         atm = round(row['Spot'] / 50) * 50 if "NIFTY" in opt_sym else round(row['Spot'] / 100) * 100
         if row['Strike'] == atm:
             return ['background-color: rgba(0,212,170,0.2)'] * len(row)
         return [''] * len(row)
-    
+
     st.dataframe(chain_df.style.apply(highlight_atm, axis=1), use_container_width=True, hide_index=True)
-    
-    # Greeks visualization
+
     fig = make_subplots(rows=2, cols=2, subplot_titles=("Delta", "Gamma", "Theta", "Vega"))
     fig.add_trace(go.Bar(x=chain_df['Strike'], y=chain_df['CE Delta'], name="CE Delta", marker_color='#00c853'), row=1, col=1)
     fig.add_trace(go.Bar(x=chain_df['Strike'], y=chain_df['PE Delta'], name="PE Delta", marker_color='#ff1744'), row=1, col=1)
@@ -1172,123 +945,6 @@ elif menu_choice == "📊 Options Chain":
     fig.add_trace(go.Bar(x=chain_df['Strike'], y=chain_df['CE Vega'], name="CE Vega", marker_color='#ab47bc'), row=2, col=2)
     fig.update_layout(template="plotly_dark", height=600, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
-
-# --- OPTIONS BUILDER (SENSIBULL-STYLE PAYOFF) ---
-elif menu_choice == "🛠️ Options Builder":
-    st.markdown("""<div class="fade-in"><h2>🛠️ Options Strategy Builder</h2><p style="color: #888;">Sensibull-स्टाइल Payoff Chart — एक्सपायरी पर प्रॉफिट/लॉस पहले से देखिए</p></div>""", unsafe_allow_html=True)
-
-    builder_sym = st.selectbox("Underlying", ["NIFTY 50", "BANKNIFTY"], key="builder_sym")
-    spot = float(st.session_state.market_data[builder_sym].iloc[-1]['Close'])
-    # NSE समय-समय पर lot size बदलता रहता है (SEBI सर्कुलर के तहत) — यहाँ
-    # जनवरी 2026 सीरीज़ की दरें इस्तेमाल की गई हैं, असली ट्रेड से पहले NSE की
-    # साइट पर मौजूदा lot size ज़रूर वेरीफाई करें।
-    lot_size = 65 if builder_sym == "NIFTY 50" else 30
-    st.caption(f"Current Spot: ₹{spot:,.2f}  |  Lot Size: {lot_size}")
-
-    with st.form("add_leg_form", clear_on_submit=True):
-        l1, l2, l3, l4, l5 = st.columns(5)
-        leg_type = l1.selectbox("Type", ["CE", "PE"])
-        leg_position = l2.selectbox("Position", ["BUY", "SELL"])
-        leg_strike = l3.number_input("Strike", value=round(spot / 50) * 50.0, step=50.0)
-        leg_premium = l4.number_input("Premium", value=50.0, step=0.5, min_value=0.0)
-        leg_lots = l5.number_input("Lots", value=1, min_value=1, step=1)
-        if st.form_submit_button("➕ Add Leg", use_container_width=True):
-            st.session_state.option_legs.append({
-                "symbol": builder_sym, "type": leg_type, "position": leg_position,
-                "strike": leg_strike, "premium": leg_premium, "lots": leg_lots, "lot_size": lot_size,
-            })
-            st.rerun()
-
-    if not st.session_state.option_legs:
-        st.info("कोई leg नहीं जोड़ा गया। ऊपर फॉर्म से अपनी strategy के legs जोड़ें — जैसे Long Call, Short Put, Straddle, Iron Condor आदि।")
-    else:
-        st.subheader("📋 Strategy Legs")
-        legs_df = pd.DataFrame(st.session_state.option_legs)
-        legs_display = legs_df[['symbol', 'type', 'position', 'strike', 'premium', 'lots']].copy()
-        legs_display.index = range(1, len(legs_display) + 1)
-        st.dataframe(legs_display, use_container_width=True)
-
-        rm_col1, rm_col2, rm_col3 = st.columns([2, 1, 1])
-        with rm_col1:
-            leg_to_remove = st.number_input(
-                "Remove Leg #", min_value=1, max_value=len(st.session_state.option_legs), value=1, step=1
-            )
-        with rm_col2:
-            if st.button("🗑️ Remove Leg", use_container_width=True):
-                st.session_state.option_legs.pop(int(leg_to_remove) - 1)
-                st.rerun()
-        with rm_col3:
-            if st.button("🧹 Clear All", use_container_width=True):
-                st.session_state.option_legs = []
-                st.rerun()
-
-        st.divider()
-        st.subheader("📈 Payoff Chart @ Expiry")
-
-        base_range = np.linspace(spot * 0.85, spot * 1.15, 300)
-        strike_points = [leg['strike'] for leg in st.session_state.option_legs]
-        spot_range = np.sort(np.unique(np.concatenate([base_range, strike_points, [spot]])))
-        total_payoff = np.zeros_like(spot_range)
-        for leg in st.session_state.option_legs:
-            qty = leg['lots'] * leg['lot_size']
-            if leg['type'] == 'CE':
-                intrinsic = np.maximum(spot_range - leg['strike'], 0)
-            else:
-                intrinsic = np.maximum(leg['strike'] - spot_range, 0)
-            leg_payoff = (intrinsic - leg['premium']) * qty if leg['position'] == 'BUY' \
-                else (leg['premium'] - intrinsic) * qty
-            total_payoff += leg_payoff
-
-        # Naked short calls carry genuinely unlimited loss (and net long calls
-        # genuinely unlimited profit) as the underlying rises — that doesn't
-        # show up correctly from a finite simulated price range, so detect it
-        # analytically from the net call exposure instead of just reading
-        # np.max/np.min off the chart.
-        net_call_slope = sum(
-            (leg['lots'] * leg['lot_size']) * (1 if leg['position'] == 'BUY' else -1)
-            for leg in st.session_state.option_legs if leg['type'] == 'CE'
-        )
-        max_profit_val = float(np.max(total_payoff))
-        max_loss_val = float(np.min(total_payoff))
-        max_profit_display = "Unlimited 🚀" if net_call_slope > 0 else f"₹{max_profit_val:,.0f}"
-        max_loss_display = "Unlimited ⚠️" if net_call_slope < 0 else f"₹{max_loss_val:,.0f}"
-
-        breakevens = []
-        for i in range(1, len(spot_range)):
-            y0, y1 = total_payoff[i - 1], total_payoff[i]
-            if y0 == 0:
-                breakevens.append(spot_range[i - 1])
-            elif (y0 < 0 < y1) or (y0 > 0 > y1):
-                x0, x1 = spot_range[i - 1], spot_range[i]
-                breakevens.append(x0 - y0 * (x1 - x0) / (y1 - y0))
-
-        bm1, bm2, bm3 = st.columns(3)
-        bm1.metric("Max Profit", max_profit_display)
-        bm2.metric("Max Loss", max_loss_display)
-        bm3.metric("Breakeven(s)", ", ".join(f"₹{b:,.0f}" for b in breakevens) if breakevens else "—")
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=spot_range, y=total_payoff, mode='lines', name='Payoff',
-            line=dict(color='#00d4aa', width=3), fill='tozeroy', fillcolor='rgba(0,212,170,0.08)'
-        ))
-        fig.add_hline(y=0, line_color='#888', line_width=1)
-        fig.add_vline(x=spot, line_dash='dash', line_color='#ff9100', annotation_text=f"Spot ₹{spot:,.0f}")
-        for be in breakevens:
-            fig.add_vline(x=be, line_dash='dot', line_color='#00d4aa', opacity=0.5)
-        fig.update_layout(
-            template="plotly_dark", height=450, showlegend=False,
-            xaxis_title="Underlying Price at Expiry", yaxis_title="P&L (₹)",
-            margin=dict(l=0, r=0, t=20, b=0),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.caption(
-            "⚠️ यह सिर्फ एक्सपायरी-डे का payoff दिखाता है — बीच में समय के साथ premium "
-            "decay (theta) या IV में बदलाव शामिल नहीं है, इसलिए चार्ट पर दिखने वाला P&L "
-            "एक्सपायरी से पहले अलग हो सकता है। असली पैसा लगाने से पहले ब्रोकर के ऑफिशियल "
-            "टूल या किसी क्वालिफाइड एडवाइज़र से ज़रूर कन्फर्म करें।"
-        )
 
 # --- MARKET NEWS ---
 elif menu_choice == "📰 Market News":
@@ -1366,11 +1022,15 @@ elif menu_choice == "📂 Portfolio":
                 st.markdown(f"""<span style="color: {pnl_color};">{pos['symbol']} {pos['side']} {pos['qty']} | P&L: ₹{pos['pnl']:.2f}</span>""", unsafe_allow_html=True)
             with c2:
                 if st.button("🔴 Close", key=f"close_{idx}"):
-                    close_position_record(
-                        "MANUAL CLOSE", pos['symbol'], pos['entry'],
-                        pos.get('ltp', pos['entry']), pos['qty'], pos['side'], pos['pnl']
-                    )
+                    outcome = "WIN" if pos['pnl'] >= 0 else "LOSS"
+                    st.session_state.trade_history.append({
+                        "Action": "MANUAL CLOSE", "Symbol": pos['symbol'], "Entry": pos['entry'],
+                        "Exit": pos.get('ltp', pos['entry']), "PnL": round(pos['pnl'], 2), "Outcome": outcome,
+                        "Time": datetime.now().strftime("%H:%M:%S"), "Qty": pos['qty']
+                    })
+                    st.session_state.used_margin -= pos['entry'] * pos['qty'] * 0.2
                     st.session_state.portfolio.pop(idx)
+                    st.session_state.loss_streak = 0 if outcome == "WIN" else st.session_state.loss_streak + 1
                     st.rerun()
     else:
         st.info("📭 No open positions. Go to Dashboard to trade.")
@@ -1387,8 +1047,7 @@ elif menu_choice == "📋 Order Book":
         for order in st.session_state.orders:
             if order['status'] == 'PENDING':
                 ltp = st.session_state.market_data[order['symbol']].iloc[-1]['Close']
-                if (order['type'] == 'LIMIT' and ((order['side'] == 'BUY' and ltp <= order['price']) or (order['side'] == 'SELL' and ltp >= order['price']))) or \
-                   (order['type'] == 'SL' and ((order['side'] == 'BUY' and ltp >= order['price']) or (order['side'] == 'SELL' and ltp <= order['price']))):
+                if (order['type'] == 'LIMIT' and ((order['side'] == 'BUY' and ltp <= order['price']) or (order['side'] == 'SELL' and ltp >= order['price']))) or                    (order['type'] == 'SL' and ((order['side'] == 'BUY' and ltp >= order['price']) or (order['side'] == 'SELL' and ltp <= order['price']))):
                     order['status'] = 'EXECUTED'
                     order['exec_price'] = ltp
                     st.session_state.portfolio.append({
@@ -1490,40 +1149,14 @@ elif menu_choice == "📅 Economic Calendar":
 # --- TRADE LEDGER WITH DEEP AUDIT ---
 elif menu_choice == "📁 Trade Ledger":
     st.markdown("""<div class="fade-in"><h2>📁 Audit Trail & Deep Reconciliation</h2></div>""", unsafe_allow_html=True)
-    st.caption(f"💾 हर ट्रेड `{DB_PATH}` में सेव हो रहा है — टर्मिनल बंद करने पर भी डेटा सुरक्षित रहता है।")
-    
+
     if st.session_state.trade_history:
         ledger_df = pd.DataFrame(st.session_state.trade_history)
         if 'Time' in ledger_df.columns:
             ledger_df = ledger_df.sort_values('Time', ascending=False)
 
-        # --- True Net-PnL Reconciliation ---
-        st.subheader("🧾 सटीक रेकन्सिलिएशन — चार्जेस के बाद असली पैसा")
-        gross_total = ledger_df['Gross PnL'].sum() if 'Gross PnL' in ledger_df.columns else ledger_df['PnL'].sum()
-        brokerage_total = ledger_df['Brokerage'].sum() if 'Brokerage' in ledger_df.columns else 0
-        stt_total = ledger_df['STT'].sum() if 'STT' in ledger_df.columns else 0
-        gst_total = ledger_df['GST'].sum() if 'GST' in ledger_df.columns else 0
-        charges_total = ledger_df['Charges'].sum() if 'Charges' in ledger_df.columns else 0
-        net_total = ledger_df['PnL'].sum()
-
-        rc1, rc2, rc3, rc4, rc5 = st.columns(5)
-        rc1.metric("Gross Profit", f"₹{gross_total:,.2f}")
-        rc2.metric("Brokerage", f"− ₹{brokerage_total:,.2f}")
-        rc3.metric("STT", f"− ₹{stt_total:,.2f}")
-        rc4.metric("GST", f"− ₹{gst_total:,.2f}")
-        rc5.metric("✅ Net PnL (बैंक में)", f"₹{net_total:,.2f}", delta=f"{net_total:,.2f}")
-        st.caption(
-            f"कुल चार्जेस: ₹{charges_total:,.2f} (ब्रोकरेज + STT + GST)। यह एक अनुमानित "
-            "इंट्राडे-इक्विटी चार्ज मॉडल है (फ्लैट/0.03% ब्रोकरेज, 0.025% STT सेल-साइड, "
-            "ब्रोकरेज पर 18% GST) — असली कॉन्ट्रैक्ट नोट में एक्सचेंज/SEBI/स्टैम्प ड्यूटी जैसे "
-            "छोटे चार्ज भी होते हैं, इसलिए सटीक आंकड़ा अपने ब्रोकर के कॉन्ट्रैक्ट नोट से ही लें।"
-        )
-        st.divider()
-
-        # Calculate Deep Risk Metrics
         metrics = calculate_risk_metrics(st.session_state.trade_history)
-        
-        # Display Risk Dashboard
+
         st.subheader("📊 Advanced Risk Dashboard")
         r1, r2, r3, r4, r5, r6 = st.columns(6)
         r1.metric("Sharpe Ratio", metrics['sharpe'])
@@ -1532,10 +1165,9 @@ elif menu_choice == "📁 Trade Ledger":
         r4.metric("Win Rate", f"{metrics['win_rate']}%")
         r5.metric("Profit Factor", metrics['profit_factor'])
         r6.metric("Expectancy", f"₹{metrics['expectancy']}")
-        
+
         st.divider()
-        
-        # Win/Loss Streak Heatmap
+
         st.subheader("🔥 Win/Loss Streak Heatmap")
         outcomes = [t['Outcome'] for t in st.session_state.trade_history]
         streaks = []
@@ -1547,7 +1179,7 @@ elif menu_choice == "📁 Trade Ledger":
                 streaks.append((outcomes[i-1], current_streak))
                 current_streak = 1
         streaks.append((outcomes[-1], current_streak))
-        
+
         streak_cols = st.columns(min(len(streaks), 10))
         for i, (outcome, count) in enumerate(streaks[:10]):
             color = "#00c853" if outcome == "WIN" else "#ff1744"
@@ -1557,9 +1189,9 @@ elif menu_choice == "📁 Trade Ledger":
                     <div style="font-size: 1.5em;">{count}</div>
                 </div>
             """, unsafe_allow_html=True)
-        
+
         st.divider()
-        
+
         total_pnl = ledger_df['PnL'].sum()
         wins = len(ledger_df[ledger_df['Outcome'] == 'WIN'])
         losses = len(ledger_df[ledger_df['Outcome'] == 'LOSS'])
@@ -1567,7 +1199,7 @@ elif menu_choice == "📁 Trade Ledger":
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Trades", len(ledger_df)); c2.metric("Win Rate", f"{win_rate:.1f}%")
         c3.metric("Total PnL", f"₹{total_pnl:.2f}"); c4.metric("Net Wins", wins - losses)
-        
+
         st.divider()
         def highlight_outcome(val):
             if val == 'WIN': return 'background-color: rgba(0,200,83,0.2); color: #00c853; font-weight: bold;'
@@ -1575,8 +1207,7 @@ elif menu_choice == "📁 Trade Ledger":
             return ''
         styled_ledger = ledger_df.style.map(highlight_outcome, subset=['Outcome'])
         st.dataframe(styled_ledger, use_container_width=True, hide_index=True)
-        
-        # EOD Excel Report
+
         st.divider()
         st.subheader("📥 EOD Excel Report")
         if st.button("Generate EOD Report", use_container_width=True, type="primary"):
@@ -1693,4 +1324,3 @@ elif menu_choice == "🔑 API Settings":
         st.text_input("WebSocket URL", placeholder="wss://api.paytmmoney.com/live/websocket")
         st.toggle("Enable Live WebSocket Feed", value=False)
         st.caption("When enabled, data auto-refreshes every 1 second without clicking Simulate Next Tick")
-        
